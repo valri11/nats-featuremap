@@ -9,6 +9,6 @@ Start NATS server
 
 Create stream
 ```
-nats stream create fewaturemap --subjects='featuremap.*' --allow-rollup
+nats stream create featuremap --subjects='featuremap.*' --allow-rollup
 ```
 
