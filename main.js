@@ -3,12 +3,9 @@ import env from './env.json';
 import {Map, View} from 'ol';
 import TileLayer from 'ol/layer/Tile';
 import TileImage from 'ol/source/TileImage';
-import VectorTileSource from 'ol/source/VectorTile';
-import VectorTileLayer from 'ol/layer/VectorTile';
 import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
 import TileDebug from 'ol/source/TileDebug';
-import MVT from 'ol/format/MVT.js';
 import WKT from 'ol/format/WKT';
 import GeoJSON from 'ol/format/GeoJSON';
 import {Fill, Stroke, Style, Text} from 'ol/style';
@@ -17,49 +14,8 @@ import {fromExtent} from 'ol/geom/Polygon';
 import {createXYZ} from 'ol/tilegrid';
 import {toSize} from 'ol/size';
 import Draw from 'ol/interaction/Draw';
-import {bbox} from 'ol/loadingstrategy';
 import throttle from './throttle';
 import { connect, consumerOpts, headers, JSONCodec } from 'nats.ws';
-
-var style = new Style({
-	fill: new Fill({
-		color: 'rgba(255, 0, 255, 0.1)'
-	}),
-	stroke: new Stroke({
-		color: '#E1F6FF',
-		width: 2
-	}),
-	text: new Text({
-		font: '12px Calibri,sans-serif',
-		fill: new Fill({
-			color: '#000'
-		}),
-		stroke: new Stroke({
-			color: '#fff',
-			width: 3
-		})
-	})
-});
-
-const lineStyle = new Style({
-	fill: new Fill({
-		color: 'rgba(255, 0, 255, 0.1)'
-	}),
-	stroke: new Stroke({
-		color: '#E1F6FF',
-		width: 2
-	}),
-	text: new Text({
-		font: '12px Calibri,sans-serif',
-		fill: new Fill({
-			color: '#000'
-		}),
-		stroke: new Stroke({
-			color: '#fff',
-			width: 3
-		})
-	})
-});
 
 const drawStyle = new Style({
 	stroke: new Stroke({
@@ -68,8 +24,16 @@ const drawStyle = new Style({
 	}),
 });
 
+function getTileServerUrl() {
+    const osm = 'http://tile.openstreetmap.org/{z}/{x}/{y}.png';
+    if (env.nearmap.apikey == '') {
+        return osm;
+    }
+    return `${env.nearmap.tile}/tiles/v3/Vert/{z}/{x}/{y}.img?env.nearmap.apikey=${env.apiKey}&tertiary=satellite`;
+}
+
 const tileService = new TileImage({
-	url: `${env.kepler.tile}/tiles/v3/Vert/{z}/{x}/{y}.img?apikey=${env.apiKey}&tertiary=satellite`,
+	url: getTileServerUrl(),
 });
 
 const drawSource = new VectorSource({wrapX: false});
@@ -79,7 +43,7 @@ function getNatsServerUrl() {
 }
 
 const jc = new JSONCodec();
-var natsServer = await connect({ servers: getNatsServerUrl() })
+var natsServer = null;
 var myId = Math.random().toString(36).slice(2, 10);
 
 var room = (new URLSearchParams(window.location.search)).get('room');
@@ -90,7 +54,16 @@ if (room == null || room == '') {
 
 var topic = 'featuremap.' + room;
 
-function initStreaming() {
+async function initStreaming() {
+
+    try {
+        natsServer = await connect({ servers: getNatsServerUrl() });
+    } catch (err) {
+        console.log(`error connecting to nats: ${err.message}`);
+        return;
+    }
+    console.info(`connected ${natsServer.getServer()}`);
+
     subscribeTopic(topic);
 }
 
@@ -99,7 +72,13 @@ async function subscribeTopic(topic) {
 
     const opts = consumerOpts()
     opts.orderedConsumer()
-    const sub = await natsServer.jetstream().subscribe(topic, opts)
+    let sub;
+    try {
+        sub = await natsServer.jetstream().subscribe(topic, opts);
+    } catch (err) {
+        console.log(`error subscribing to stream: ${err.message}`);
+        return;
+    }
 
     for await(const m of sub) {
         const data = jc.decode(m.data);
