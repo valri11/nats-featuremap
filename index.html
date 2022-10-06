@@ -34,19 +34,27 @@
 	    	<pre id="info"/>
 	</div>
 	<div>
-	  <br>
 	  <label for="checkbox-debug-layer"> | debug layer</label>
   	  <input type="checkbox" id="checkbox-debug-layer" name="checkbox-debug-layer">
-	  <br>
 	  <label for="checkbox-basemap"> | base map</label>
   	  <input type="checkbox" id="checkbox-basemap" name="checkbox-basemap" checked>
 	  <br>
-	  <label for="favcolor">Color:</label>
-	  <input type="color" id="favcolor" name="favcolor" value="#0000F1">
-	  <button id="btn-draw-start">Start draw</button>
-	  <button id="btn-draw-stop">Stop draw</button>
-	  <button id="btn-draw-clear">Clear draw</button>
-	  </div>
+      <label for="geomtype">Geometry type &nbsp;</label>
+      <select id="geomtype">
+        <option value="Polygon" selected>Polygon</option>
+        <option value="LineString">LineString</option>
+        <option value="Point">Point</option>
+      </select>
+      <label for="feattext">Label: &nbsp;</label>
+      <input type="text" id="feattext" name="feattext" value="?">
+	  <label for="featcolor">Color:</label>
+	  <input type="color" id="featcolor" name="featcolor" value="#0000F1">
+      <div style="padding: 5px;">
+          <button id="btn-draw-start">Start draw</button>
+          <button id="btn-draw-stop">Stop draw</button>
+          <button id="btn-draw-clear">Clear draw</button>
+      </div>
+	</div>
 	<script type="module" src="./main.js"></script>
   </body>
 </html>

@@ -8,21 +8,14 @@ import VectorSource from 'ol/source/Vector';
 import TileDebug from 'ol/source/TileDebug';
 import WKT from 'ol/format/WKT';
 import GeoJSON from 'ol/format/GeoJSON';
-import {Fill, Stroke, Style, Text} from 'ol/style';
+import {Circle, Fill, Stroke, Style, Text} from 'ol/style';
 import {fromLonLat, transformExtent} from 'ol/proj';
 import {fromExtent} from 'ol/geom/Polygon';
 import {createXYZ} from 'ol/tilegrid';
 import {toSize} from 'ol/size';
-import Draw from 'ol/interaction/Draw';
+import {Draw, Modify, Snap} from 'ol/interaction';
 import throttle from './throttle';
 import { connect, consumerOpts, headers, JSONCodec } from 'nats.ws';
-
-const drawStyle = new Style({
-	stroke: new Stroke({
-		color: '#0000E1',
-		width: 4
-	}),
-});
 
 function getTileServerUrl() {
     const osm = 'http://tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -92,14 +85,10 @@ async function subscribeTopic(topic) {
                 if (data.id != myId) {
                     var parser = new GeoJSON();
                     var feat = parser.readFeature(data.data);
-                    //console.log('feat: ' + JSON.stringify(feat));
-                    var color = data.color
-                    var featStyle = new Style({
-                        stroke: new Stroke({
-                            color: color,
-                            width: 4
-                        }),
-                    });
+                    //console.log('add feat: ' + JSON.stringify(feat));
+                    var col = data.color
+                    var text = data.text
+                    var featStyle = createFeatureStyle(col, text);
                     feat.setStyle(featStyle);
                     drawSource.addFeature(feat);
                 }
@@ -149,19 +138,8 @@ const basemapLayer = new TileLayer({
 	source: tileService,
 });
 
-//drawSource.on('addfeature', drawSource_OnAddFeature);
-
-function drawSource_OnAddFeature(event) {
-    //console.log('addfeature: ' + JSON.stringify(event.feature.getGeometry()));
-
-    var fmt = new GeoJSON();
-    var out = fmt.writeFeature(event.feature);
-    //console.log('GeoJSON: ' + out);
-}
-
 const drawLayer = new VectorLayer({
   source: drawSource,
-  style: drawStyle,
 });
 
 const mapView = new View({
@@ -180,43 +158,97 @@ const map = new Map({
 	view: mapView,
 });
 
-const drawInteraction = new Draw({
+const geomTypeSelect = document.getElementById('geomtype');
+const featText = document.getElementById('feattext');
+const featColor = document.getElementById("featcolor");
+
+var drawInteraction;
+
+const modifyInteraction = new Modify({
   source: drawSource,
-  type: 'Polygon',
 });
 
-function addInteraction() {
-    var e = document.getElementById("favcolor");
-    var col = e.value;
-    const drawStyle = new Style({
+var snapInteraction = new Snap({
+  source: drawSource,
+});
+
+function createFeatureStyle(color, textValue) {
+    var style = new Style({
         stroke: new Stroke({
-            color: col,
+            color: color,
             width: 4
         }),
+        image: new Circle({
+            radius: 12,
+            fill: new Fill({
+                color: color,
+            }),
+            stroke: new Stroke({
+            color: [255, 255, 255, 1],
+            width: 4,
+            }),
+        }),
+        text: new Text({
+            textAlign: "left",
+            offsetX: 14,
+            text: textValue,
+            font: 'bold 16px Calibri,sans-serif',
+        }),
+        zIndex: Infinity,
     });
-    drawLayer.setStyle(drawStyle);
-    map.addInteraction(drawInteraction);
+
+    return style;
 }
 
-drawInteraction.on('drawend', function(event) {
+function addInteractions() {
+    drawInteraction = new Draw({
+        source: drawSource,
+        type: geomTypeSelect.value,
+    });
+
+    drawInteraction.on('drawstart', function(event) {
+        var col = featColor.value;
+        var text = featText.value;
+        var drawStyle = createFeatureStyle(col, text);
+        event.feature.setStyle(drawStyle);
+    });
+
+    drawInteraction.on('drawend', function(event) {
+        var fmt = new GeoJSON();
+        var out = fmt.writeFeature(event.feature);
+        var e = document.getElementById("featcolor");
+        var col = e.value;
+        console.log('Feat: ' + out);
+        throttle(() => {
+            const msg = {
+                id: myId,
+                type: 'AddFeature',
+                data: out,
+                color: col,
+                text: featText.value,
+            };
+            natsServer.publish(topic, jc.encode(msg))
+        }, 30)()
+        //drawSource.clear();
+    });
+
+    map.addInteraction(drawInteraction);
+    map.addInteraction(modifyInteraction);
+    map.addInteraction(snapInteraction);
+}
+
+modifyInteraction.on('modifyend', function(event) {
+    if (event.features == null || event.features.length == 0) {
+        return;
+    }
     var fmt = new GeoJSON();
-    var out = fmt.writeFeature(event.feature);
-    var e = document.getElementById("favcolor");
-    var col = e.value;
-    //console.log(' : ' + out);
-    throttle(() => {
-        const msg = {
-            id: myId,
-            type: 'AddFeature',
-            data: out,
-            color: col,
-        };
-        natsServer.publish(topic, jc.encode(msg))
-    }, 30)()
-    //drawSource.clear();
+    var out = fmt.writeFeature(event.features.item(0));
+    var e = document.getElementById("featcolor");
+    //var col = e.value;
+    console.log(' : ' + out);
 });
 
-map.on('pointermove', showInfo);
+//map.on('pointermove', showInfo);
 map.on('movestart', onMapMoveStart);
 map.on('moveend', onMapMoveEnd);
 
@@ -241,11 +273,13 @@ function onClick(id, callback) {
 }
 
 onClick('btn-draw-start', function() {
-    addInteraction();
+    addInteractions();
 });
 
 onClick('btn-draw-stop', function() {
     map.removeInteraction(drawInteraction);
+    map.removeInteraction(modifyInteraction);
+    map.removeInteraction(snapInteraction);
 });
 
 onClick('btn-draw-clear', function() {
@@ -256,6 +290,19 @@ onClick('btn-draw-clear', function() {
     h.set("Nats-Rollup", "sub")
     natsServer.publish(topic, jc.encode(msg), { headers: h })
 });
+
+geomTypeSelect.onchange = function() {
+    map.removeInteraction(drawInteraction);
+    map.removeInteraction(modifyInteraction);
+    map.removeInteraction(snapInteraction);
+    addInteractions();
+};
+
+//featColor.onchange = function() {
+//    var col = featColor.value;
+//    var drawStyle = createFeatureStyle(col);
+//    drawLayer.setStyle(drawStyle);
+//}
 
 const info = document.getElementById('info');
 function showInfo(event) {
@@ -273,14 +320,6 @@ function showInfo(event) {
   delete pr.geometry;
   info.innerText = JSON.stringify(pr, null, 2);
   info.style.opacity = 1;
-}
-
-function getBoundsFromExtent(extent) {
-  extent = transformExtent(extent, 'EPSG:3857', 'EPSG:4326')
-  var pol = fromExtent(extent)
-  var format = new WKT();
-  var wkt = format.writeGeometry(pol);
-  return wkt.toString();
 }
 
 document.getElementById("checkbox-debug-layer").addEventListener('change', function() {
