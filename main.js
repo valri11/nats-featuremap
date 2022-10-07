@@ -6,16 +6,15 @@ import TileImage from 'ol/source/TileImage';
 import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
 import TileDebug from 'ol/source/TileDebug';
-import WKT from 'ol/format/WKT';
 import GeoJSON from 'ol/format/GeoJSON';
 import {Circle, Fill, Stroke, Style, Text} from 'ol/style';
-import {fromLonLat, transformExtent} from 'ol/proj';
-import {fromExtent} from 'ol/geom/Polygon';
 import {createXYZ} from 'ol/tilegrid';
 import {toSize} from 'ol/size';
+import {fromLonLat} from 'ol/proj';
 import {Draw, Modify, Snap} from 'ol/interaction';
 import throttle from './throttle';
 import { connect, consumerOpts, headers, JSONCodec } from 'nats.ws';
+import { v4 as uuidv4 } from 'uuid';
 
 function getTileServerUrl() {
     const osm = 'http://tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -29,7 +28,10 @@ const tileService = new TileImage({
 	url: getTileServerUrl(),
 });
 
-const drawSource = new VectorSource({wrapX: false});
+const drawSource = new VectorSource({
+    wrapX: false,
+    useSpatialIndex: false,
+});
 
 function getNatsServerUrl() {
     return `ws://${env.natsserver.host}:${env.natsserver.port}`;
@@ -75,23 +77,46 @@ async function subscribeTopic(topic) {
 
     for await(const m of sub) {
         const data = jc.decode(m.data);
-        //console.log('data: ' + JSON.stringify(data));
+        //console.log('headers: ' + m.headers);
+        console.log('data: ' + JSON.stringify(data));
+
+        var defaultColor = featColor.value;
+        var parser = new GeoJSON();
 
         switch (data.type) {
             case "clear":
                 drawSource.clear();
                 break;
             case "AddFeature":
-                if (data.id != myId) {
-                    var parser = new GeoJSON();
-                    var feat = parser.readFeature(data.data);
-                    //console.log('add feat: ' + JSON.stringify(feat));
-                    var col = data.color
-                    var text = data.text
-                    var featStyle = createFeatureStyle(col, text);
-                    feat.setStyle(featStyle);
-                    drawSource.addFeature(feat);
+                if (data.id == myId) {
+                    break;
                 }
+                var feat = parser.readFeature(data.data);
+                //console.log('add feat: ' + JSON.stringify(feat));
+                var col = feat.get("color");
+                if (col == null) {
+                    col = defaultColor;
+                }
+                var text = feat.get("text");
+                var featStyle = createFeatureStyle(col, text);
+                feat.setStyle(featStyle);
+                drawSource.addFeature(feat);
+                break;
+            case "ModifyFeature":
+                if (data.id == myId) {
+                    break;
+                }
+                var feat = parser.readFeature(data.data);
+                var col = feat.get("color");
+                if (col == null) {
+                    col = defaultColor;
+                }
+                var text = feat.get("text");
+                var featStyle = createFeatureStyle(col, text);
+                feat.setStyle(featStyle);
+                var featId = feat.getId();
+                drawSource.removeFeature(drawSource.getFeatureById(featId));
+                drawSource.addFeature(feat);
                 break;
             default:
                 console.log('unknown msg type: ' + data.type);
@@ -215,21 +240,23 @@ function addInteractions() {
 
     drawInteraction.on('drawend', function(event) {
         var fmt = new GeoJSON();
+        var col = featColor.value;
+        var text = featText.value;
+
+        event.feature.setId(uuidv4());
+        event.feature.set("color", col);
+        event.feature.set("text", text);
+
         var out = fmt.writeFeature(event.feature);
-        var e = document.getElementById("featcolor");
-        var col = e.value;
-        console.log('Feat: ' + out);
+        console.log('publish feat: ' + out);
         throttle(() => {
             const msg = {
                 id: myId,
                 type: 'AddFeature',
                 data: out,
-                color: col,
-                text: featText.value,
             };
-            natsServer.publish(topic, jc.encode(msg))
-        }, 30)()
-        //drawSource.clear();
+            natsServer.publish(topic, jc.encode(msg));
+        }, 30)();
     });
 
     map.addInteraction(drawInteraction);
@@ -242,10 +269,29 @@ modifyInteraction.on('modifyend', function(event) {
         return;
     }
     var fmt = new GeoJSON();
-    var out = fmt.writeFeature(event.features.item(0));
-    var e = document.getElementById("featcolor");
-    //var col = e.value;
-    console.log(' : ' + out);
+
+    var modFeat = event.features.item(0);
+
+    var col = featColor.value;
+    var text = featText.value;
+
+    modFeat.set("color", col);
+    modFeat.set("text", text);
+
+    var featStyle = createFeatureStyle(col, text);
+    modFeat.setStyle(featStyle);
+
+    var out = fmt.writeFeature(modFeat);
+
+    console.log('publish feat: ' + out);
+    throttle(() => {
+        const msg = {
+            id: myId,
+            type: 'ModifyFeature',
+            data: out,
+        };
+        natsServer.publish(topic, jc.encode(msg));
+    }, 30)();
 });
 
 //map.on('pointermove', showInfo);
@@ -288,7 +334,7 @@ onClick('btn-draw-clear', function() {
     const msg = { id: this.id, type: "clear", }
     const h = headers()
     h.set("Nats-Rollup", "sub")
-    natsServer.publish(topic, jc.encode(msg), { headers: h })
+    natsServer.publish(topic, jc.encode(msg), {headers: h});
 });
 
 geomTypeSelect.onchange = function() {
