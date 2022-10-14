@@ -21,7 +21,7 @@ function getTileServerUrl() {
     if (env.nearmap.apikey == '') {
         return osm;
     }
-    return `${env.nearmap.tile}/tiles/v3/Vert/{z}/{x}/{y}.img?env.nearmap.apikey=${env.apiKey}&tertiary=satellite`;
+    return `${env.nearmap.tile}/tiles/v3/Vert/{z}/{x}/{y}.img?apikey=${env.nearmap.apikey}&tertiary=satellite`;
 }
 
 const tileService = new TileImage({
@@ -41,10 +41,24 @@ const jc = new JSONCodec();
 var natsServer = null;
 var myId = Math.random().toString(36).slice(2, 10);
 
+var objectIdArr = new Array();
+var lastObjectIdx = 0;
+
+const rangeHistoryCtrl = document.getElementById("range-history")
+const rangeHistorySelValCtrl = document.getElementById('range-history-val');
+const timeMachineDiv = document.getElementById("time-machine-div")
+
+rangeHistorySelValCtrl.innerText = rangeHistoryCtrl.value;
+
 var room = (new URLSearchParams(window.location.search)).get('room');
 if (room == null || room == '') {
     room = myId;
     window.location.replace(`?room=${room}`);
+}
+
+var timeMachineSel = (new URLSearchParams(window.location.search)).get('history');
+if (timeMachineSel != null) {
+    timeMachineDiv.hidden = false;
 }
 
 var topic = 'featuremap.' + room;
@@ -88,10 +102,21 @@ async function subscribeTopic(topic) {
                 drawSource.clear();
                 break;
             case "AddFeature":
+
+                var feat = parser.readFeature(data.data);
+                var featId = feat.getId();
+                objectIdArr.push(featId);
+
+                var objLen = objectIdArr.length
+                rangeHistoryCtrl.max = objLen;
+                rangeHistoryCtrl.value = objLen;
+                rangeHistorySelValCtrl.innerText = rangeHistoryCtrl.value;
+                lastObjectIdx = objLen - 1;
+                console.log('lastObjectIdx: ' + lastObjectIdx);
+
                 if (data.id == myId) {
                     break;
                 }
-                var feat = parser.readFeature(data.data);
                 //console.log('add feat: ' + JSON.stringify(feat));
                 var col = feat.get("color");
                 if (col == null) {
@@ -101,6 +126,7 @@ async function subscribeTopic(topic) {
                 var featStyle = createFeatureStyle(col, text);
                 feat.setStyle(featStyle);
                 drawSource.addFeature(feat);
+                console.log('subscriber - add feat: ' + featId);
                 break;
             case "ModifyFeature":
                 if (data.id == myId) {
@@ -168,9 +194,9 @@ const drawLayer = new VectorLayer({
 });
 
 const mapView = new View({
-    center: fromLonLat([150.3120553998699, -33.73196775624329]),
-    //center: fromLonLat([149.09757256507874, -35.273810586440796]),
-    zoom: 17
+    //center: fromLonLat([150.3120553998699, -33.73196775624329]),
+    center: fromLonLat([151.2149285868793, -33.8577860563237]),
+    zoom: 16
 });
 
 const map = new Map({
@@ -215,9 +241,11 @@ function createFeatureStyle(color, textValue) {
         }),
         text: new Text({
             textAlign: "left",
-            offsetX: 14,
+            offsetX: 18,
             text: textValue,
-            font: 'bold 16px Calibri,sans-serif',
+            font: 'bold 16px Helvetica,sans-serif',
+            fill: new Fill({color: '#0180FD'}),
+            stroke: new Stroke({color: [0,0,0,1], width: 5}),
         }),
         zIndex: Infinity,
     });
@@ -294,7 +322,6 @@ modifyInteraction.on('modifyend', function(event) {
     }, 30)();
 });
 
-//map.on('pointermove', showInfo);
 map.on('movestart', onMapMoveStart);
 map.on('moveend', onMapMoveEnd);
 
@@ -329,7 +356,9 @@ onClick('btn-draw-stop', function() {
 });
 
 onClick('btn-draw-clear', function() {
-    //drawSource.clear();
+    if (!confirm('This will delete all features. Are you sure?')) {
+        return;
+    }
 
     const msg = { id: this.id, type: "clear", }
     const h = headers()
@@ -344,29 +373,109 @@ geomTypeSelect.onchange = function() {
     addInteractions();
 };
 
-//featColor.onchange = function() {
-//    var col = featColor.value;
-//    var drawStyle = createFeatureStyle(col);
-//    drawLayer.setStyle(drawStyle);
-//}
+onClick('btn-disconnect', function() {
+    disconnectEventSource();
+});
 
-const info = document.getElementById('info');
-function showInfo(event) {
-  info.innerText = '<???>';
-  info.style.opacity = 1;
+function disconnectEventSource() {
+    drawSource.clear();
 
-  const features = map.getFeaturesAtPixel(event.pixel);
-  if (features == null || features.length == 0) {
-    info.innerText = 'NO DATA';
-    info.style.opacity = 1;
-    return;
-  }
-  const properties = features[0].getProperties();
-  var pr = properties
-  delete pr.geometry;
-  info.innerText = JSON.stringify(pr, null, 2);
-  info.style.opacity = 1;
+    natsServer.close();
+
+    objectIdArr.forEach(function(value, index, array) {
+        console.log(`${index} - ${value}`);
+    });
+
+    objectIdArr = new Array();
 }
+
+async function fetchEvents() {
+
+    disconnectEventSource();
+
+    natsServer = await connect({ servers: getNatsServerUrl() })
+
+    const opts = consumerOpts()
+    opts.orderedConsumer()
+    const sub = await natsServer.jetstream().subscribe(topic, opts)
+
+    for await(const m of sub) {
+        const data = jc.decode(m.data);
+        //console.log('data: ' + JSON.stringify(data));
+
+        var defaultColor = featColor.value;
+        var parser = new GeoJSON();
+
+        switch (data.type) {
+            case "clear":
+                drawSource.clear();
+                break;
+            case "AddFeature":
+
+                console.log('lastObjectIdx: ' + lastObjectIdx);
+
+                var feat = parser.readFeature(data.data);
+                var featId = feat.getId();
+
+                objectIdArr.push(featId);
+
+                var objLen = objectIdArr.length
+                if (lastObjectIdx < objLen - 1) {
+                    console.log('skip: ' + featId);
+                    break;
+                }
+
+                if (data.id == myId) {
+                    break;
+                }
+                //console.log('add feat: ' + JSON.stringify(feat));
+                var col = feat.get("color");
+                if (col == null) {
+                    col = defaultColor;
+                }
+                var text = feat.get("text");
+                var featStyle = createFeatureStyle(col, text);
+                feat.setStyle(featStyle);
+                drawSource.addFeature(feat);
+                console.log('add feat: ' + featId);
+                break;
+            case "ModifyFeature":
+                if (data.id == myId) {
+                    break;
+                }
+                var feat = parser.readFeature(data.data);
+                var col = feat.get("color");
+                if (col == null) {
+                    col = defaultColor;
+                }
+                var text = feat.get("text");
+                var featStyle = createFeatureStyle(col, text);
+                feat.setStyle(featStyle);
+                var featId = feat.getId();
+                drawSource.removeFeature(drawSource.getFeatureById(featId));
+                drawSource.addFeature(feat);
+                break;
+            default:
+                console.log('unknown msg type: ' + data.type);
+                break;
+        }
+
+    }
+}
+
+onClick('btn-connect', fetchEvents);
+
+rangeHistoryCtrl.oninput = function(event) {
+    rangeHistorySelValCtrl.innerText = rangeHistoryCtrl.value;
+}
+
+rangeHistoryCtrl.onchange = function(event) {
+    rangeHistorySelValCtrl.innerText = rangeHistoryCtrl.value;
+    lastObjectIdx = parseInt(rangeHistoryCtrl.value) - 1;
+    console.log('lastObjectIdx: ' + lastObjectIdx);
+
+    fetchEvents();
+};
 
 document.getElementById("checkbox-debug-layer").addEventListener('change', function() {
     debugLayer.setVisible(this.checked);

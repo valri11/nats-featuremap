@@ -54,6 +54,17 @@
           <button id="btn-draw-start">Start draw</button>
           <button id="btn-draw-stop">Stop draw</button>
           <button id="btn-draw-clear">Clear draw</button>
+	  <div id="time-machine-div" hidden>
+	  <div id="time-machine-debug" hidden>
+	  <button id="btn-disconnect">Disconnect</button>
+	  <button id="btn-connect">Connect</button>
+	  </div>
+	  <label>
+	  	Event history:
+	  	<input type="range" id="range-history" class="slider" min="0" max="0" value="0" style="width: 400px;">
+		<span id="range-history-val"></span>
+	  </label>
+	  </div>
       </div>
 	</div>
 	<script type="module" src="./main.js"></script>
