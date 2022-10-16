@@ -41,8 +41,9 @@ const jc = new JSONCodec();
 var natsServer = null;
 var myId = Math.random().toString(36).slice(2, 10);
 
-var objectIdArr = new Array();
-var lastObjectIdx = 0;
+var eventCount = 0;
+var displayEventCount = 0;
+var lastDisplayEvent = 0;
 
 const rangeHistoryCtrl = document.getElementById("range-history")
 const rangeHistorySelValCtrl = document.getElementById('range-history-val');
@@ -88,6 +89,9 @@ async function subscribeTopic(topic) {
         console.log(`error subscribing to stream: ${err.message}`);
         return;
     }
+    eventCount = 0;
+    displayEventCount = 0;
+    lastDisplayEvent = 0;
 
     for await(const m of sub) {
         const data = jc.decode(m.data);
@@ -105,14 +109,12 @@ async function subscribeTopic(topic) {
 
                 var feat = parser.readFeature(data.data);
                 var featId = feat.getId();
-                objectIdArr.push(featId);
 
-                var objLen = objectIdArr.length
-                rangeHistoryCtrl.max = objLen;
-                rangeHistoryCtrl.value = objLen;
+                eventCount++;
+                rangeHistoryCtrl.max = eventCount;
+                rangeHistoryCtrl.value = eventCount;
                 rangeHistorySelValCtrl.innerText = rangeHistoryCtrl.value;
-                lastObjectIdx = objLen - 1;
-                console.log('lastObjectIdx: ' + lastObjectIdx);
+                displayEventCount = eventCount;
 
                 if (data.id == myId) {
                     break;
@@ -129,6 +131,12 @@ async function subscribeTopic(topic) {
                 console.log('subscriber - add feat: ' + featId);
                 break;
             case "ModifyFeature":
+                eventCount++;
+                rangeHistoryCtrl.max = eventCount;
+                rangeHistoryCtrl.value = eventCount;
+                rangeHistorySelValCtrl.innerText = rangeHistoryCtrl.value;
+                displayEventCount = eventCount;
+
                 if (data.id == myId) {
                     break;
                 }
@@ -150,6 +158,89 @@ async function subscribeTopic(topic) {
         }
     }
 }
+
+function disconnectEventSource() {
+    drawSource.clear();
+
+    natsServer.close();
+}
+
+async function fetchEvents() {
+
+    disconnectEventSource();
+
+    natsServer = await connect({ servers: getNatsServerUrl() })
+
+    const opts = consumerOpts()
+    opts.orderedConsumer()
+    const sub = await natsServer.jetstream().subscribe(topic, opts)
+    lastDisplayEvent = 0;
+
+    for await(const m of sub) {
+        const data = jc.decode(m.data);
+        //console.log('data: ' + JSON.stringify(data));
+
+        var defaultColor = featColor.value;
+        var parser = new GeoJSON();
+
+        switch (data.type) {
+            case "clear":
+                drawSource.clear();
+                break;
+            case "AddFeature":
+                if (displayEventCount < lastDisplayEvent + 1) {
+                    console.log('skip: ' + featId);
+                    break;
+                }
+                lastDisplayEvent++
+
+                var feat = parser.readFeature(data.data);
+                var featId = feat.getId();
+
+                if (data.id == myId) {
+                    break;
+                }
+                //console.log('add feat: ' + JSON.stringify(feat));
+                var col = feat.get("color");
+                if (col == null) {
+                    col = defaultColor;
+                }
+                var text = feat.get("text");
+                var featStyle = createFeatureStyle(col, text);
+                feat.setStyle(featStyle);
+                drawSource.addFeature(feat);
+                console.log('add feat: ' + featId);
+                break;
+            case "ModifyFeature":
+                if (displayEventCount < lastDisplayEvent + 1) {
+                    console.log('skip: ' + featId);
+                    break;
+                }
+                lastDisplayEvent++
+
+                if (data.id == myId) {
+                    break;
+                }
+                var feat = parser.readFeature(data.data);
+                var col = feat.get("color");
+                if (col == null) {
+                    col = defaultColor;
+                }
+                var text = feat.get("text");
+                var featStyle = createFeatureStyle(col, text);
+                feat.setStyle(featStyle);
+                var featId = feat.getId();
+                drawSource.removeFeature(drawSource.getFeatureById(featId));
+                drawSource.addFeature(feat);
+                break;
+            default:
+                console.log('unknown msg type: ' + data.type);
+                break;
+        }
+
+    }
+}
+
 
 const debugLayer = new TileLayer({
     source: new TileDebug({
@@ -377,102 +468,16 @@ onClick('btn-disconnect', function() {
     disconnectEventSource();
 });
 
-function disconnectEventSource() {
-    drawSource.clear();
-
-    natsServer.close();
-
-    objectIdArr.forEach(function(value, index, array) {
-        console.log(`${index} - ${value}`);
-    });
-
-    objectIdArr = new Array();
-}
-
-async function fetchEvents() {
-
-    disconnectEventSource();
-
-    natsServer = await connect({ servers: getNatsServerUrl() })
-
-    const opts = consumerOpts()
-    opts.orderedConsumer()
-    const sub = await natsServer.jetstream().subscribe(topic, opts)
-
-    for await(const m of sub) {
-        const data = jc.decode(m.data);
-        //console.log('data: ' + JSON.stringify(data));
-
-        var defaultColor = featColor.value;
-        var parser = new GeoJSON();
-
-        switch (data.type) {
-            case "clear":
-                drawSource.clear();
-                break;
-            case "AddFeature":
-
-                console.log('lastObjectIdx: ' + lastObjectIdx);
-
-                var feat = parser.readFeature(data.data);
-                var featId = feat.getId();
-
-                objectIdArr.push(featId);
-
-                var objLen = objectIdArr.length
-                if (lastObjectIdx < objLen - 1) {
-                    console.log('skip: ' + featId);
-                    break;
-                }
-
-                if (data.id == myId) {
-                    break;
-                }
-                //console.log('add feat: ' + JSON.stringify(feat));
-                var col = feat.get("color");
-                if (col == null) {
-                    col = defaultColor;
-                }
-                var text = feat.get("text");
-                var featStyle = createFeatureStyle(col, text);
-                feat.setStyle(featStyle);
-                drawSource.addFeature(feat);
-                console.log('add feat: ' + featId);
-                break;
-            case "ModifyFeature":
-                if (data.id == myId) {
-                    break;
-                }
-                var feat = parser.readFeature(data.data);
-                var col = feat.get("color");
-                if (col == null) {
-                    col = defaultColor;
-                }
-                var text = feat.get("text");
-                var featStyle = createFeatureStyle(col, text);
-                feat.setStyle(featStyle);
-                var featId = feat.getId();
-                drawSource.removeFeature(drawSource.getFeatureById(featId));
-                drawSource.addFeature(feat);
-                break;
-            default:
-                console.log('unknown msg type: ' + data.type);
-                break;
-        }
-
-    }
-}
-
 onClick('btn-connect', fetchEvents);
 
 rangeHistoryCtrl.oninput = function(event) {
     rangeHistorySelValCtrl.innerText = rangeHistoryCtrl.value;
 }
 
-rangeHistoryCtrl.onchange = function(event) {
+rangeHistoryCtrl.onchange = function() {
     rangeHistorySelValCtrl.innerText = rangeHistoryCtrl.value;
-    lastObjectIdx = parseInt(rangeHistoryCtrl.value) - 1;
-    console.log('lastObjectIdx: ' + lastObjectIdx);
+    displayEventCount = parseInt(rangeHistoryCtrl.value);
+    console.log('displayEventCount: ' + displayEventCount);
 
     fetchEvents();
 };
