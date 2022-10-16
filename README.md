@@ -12,3 +12,9 @@ Create stream
 nats stream create featuremap --subjects='featuremap.*' --allow-rollup
 ```
 
+
+Start web app:
+```
+npm install
+npm start
+```
